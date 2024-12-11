@@ -1,0 +1,114 @@
+version: "3.8"
+services:
+  proxy:
+    image: docker.io/nginxinc/nginx-unprivileged:1.25
+    ports:
+      - 80:8080    
+    networks:
+      - default
+    restart: unless-stopped
+    volumes:
+      - "./proxy/default.conf:/etc/nginx/conf.d/default.conf"
+  
+  pygeoapi:
+    image: docker.io/geopython/pygeoapi:latest
+    # ports:
+    #   - ${PORT}:80
+    environment:
+      - SCRIPT_NAME=/ogcapi
+      # - PYGEOAPI_CONFIG=/pygeoapi/pygeoapi-config.yml
+    #   - PORT=${PORT}
+    volumes:
+      - ./pygeoapi/default.config.yml:/pygeoapi/local.config.yml
+    depends_on:
+      - postgis
+      - elasticsearch
+    networks:
+      - default
+
+  geoserver:
+    image: ndscprm/geoserver:2.24.4-test
+    platform: linux/amd64
+    user: '1000'  # Trocar pelo UID da máquina do dev
+    restart: on-failure
+    # ports:
+    #   - 8080:8080
+    networks:
+      - default
+    volumes:
+      - "geoserver-data:/srv/geoserver/data"
+    depends_on:
+      - postgis
+      - elasticsearch
+    environment:
+      JAVA_OPTS: >-
+        -server
+        -Djava.awt.headless=true
+        -Xms2G
+        -Xmx3G
+      CATALINA_OPTS: >-
+        -XX:PerfDataSamplingInterval=500
+        -XX:SoftRefLRUPolicyMSPerMB=36000
+        -XX:NewRatio=2
+        -XX:+UseG1GC
+        -XX:+UseStringDeduplication
+        -XX:InitiatingHeapOccupancyPercent=70
+        -XX:+CMSClassUnloadingEnabled
+      GEOSERVER_OPTS: >-
+        -Dorg.geotools.referencing.forceXY=true
+        -Dorg.geotools.shapefile.datetime=true
+        -Dgeoserver.login.autocomplete=off
+        -Doracle.jdbc.timezoneAsRegion=false
+      GEOSERVER_NODE_OPTS: id:MASTER;background:red;color:white
+      PROXY_BASE_URL: http://localhost/geoserver
+      GEOSERVER_CSRF_DISABLED: true
+      GEOSERVER_CORS_ALLOWED_ORIGINS: "*"
+      GEOWEBCACHE_CACHE_DIR: "/tmp"
+
+  # https://airflow.apache.org/docs/apache-airflow/stable/howto/docker-compose/index.html
+  airflow:
+    image: docker.io/ndscprm/airflow:slim-2.10.3-python3.10
+    build:
+      context: airflow/
+    # ports:
+    #   - 8080:8080
+    environment: 
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${AIRFLOW_DATABASE_USER}:${AIRFLOW_DATABASE_PASSWORD}@postgis/${AIRFLOW_DATABASE}
+      - SCRIPT_NAME=/airflow
+    command: ["standalone"]
+
+  postgis:
+    image: docker.io/postgis/postgis:13-3.4
+    ports:
+      - 5432:5432
+    env_file:
+      - .env
+    volumes: 
+      - postgis-data:/var/lib/postgresql
+      - ./postgis/initdb.sh:/docker-entrypoint-initdb.d/20-initdb.sh:ro 
+    networks:
+      - default
+
+  elasticsearch:
+    image: docker.io/library/elasticsearch:8.16.1
+    ports:
+      - 9200:9200
+      - 9300:9300
+    environment:
+      # - ELASTIC_PASSWORD=elastic
+      - xpack.security.enabled=false
+      - discovery.type=single-node
+      - ES_JAVA_OPTS=-Xms2048m -Xmx2048m
+    volumes:
+      - es-data:/usr/share/elasticsearch/data    
+    networks:
+      - default
+
+volumes:
+  geoserver-data:
+  postgis-data:
+  es-data:
+
+networks:
+  default:
